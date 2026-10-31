@@ -1,10 +1,10 @@
-# Maintainer: bywrd draganarseniy039@gmail.com
+# Maintainer: Ars <draganarseniy039@gmail.com>
 pkgname=pkgclean
-pkgver=1.0.0
+pkgver=2.0.0
 pkgrel=1
-pkgdesc='Interactive terminal tool to uninstall apps and clean leftovers on Arch Linux'
+pkgdesc='Interactive terminal tool to uninstall apps and clean leftovers (pacman, apt, dnf)'
 arch=('any')
-url='https://github.com/YOUR_GITHUB_NAME/pkgclean'
+url='https://github.com/bywrd/pkgclean'
 license=('MIT')
 depends=('bash' 'pacman' 'sudo' 'fzf')
 optdepends=(
@@ -19,4 +19,5 @@ package() {
   install -Dm755 pkgclean "$pkgdir/usr/bin/pkgclean"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 README.ru.md "$pkgdir/usr/share/doc/$pkgname/README.ru.md"
 }

@@ -1,0 +1,13 @@
+Package: pkgclean
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: all
+Depends: bash, fzf, sudo
+Recommends: flatpak
+Maintainer: Ars <draganarseniy039@gmail.com>
+Homepage: https://github.com/bywrd/pkgclean
+Description: Interactive terminal uninstaller and system cleaner
+ Pick an app from a list (no need to remember package names) and remove it
+ with or without its leftovers. Also cleans orphaned dependencies and caches.
+ Supports pacman, apt and dnf.

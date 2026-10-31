@@ -1,49 +1,109 @@
 # pkgclean
 
-Interactive terminal tool for Arch Linux: pick an app from a list (no need to
-remember package names) and remove it the way you want.
+[Русская версия](README.ru.md)
+
+Interactive terminal tool to uninstall apps and clean your system. Pick an app
+from a list (no need to remember package names) and remove it the way you want:
+just the package, with dependencies, or completely with all its leftovers.
+
+Works on **Arch** (`pacman`), **Debian / Ubuntu / Mint** (`apt`) and
+**Fedora / RHEL** (`dnf`). The package manager is detected automatically.
 
 ## Features
 
-- List of installed packages sorted by size, with live preview (fzf)
-- Multi-select with Tab
-- Removal modes: `-R`, `-Rs`, `-Rns`, or **full** (package + leftovers in
-  `~/.config`, `~/.cache`, `~/.local/share`, ...)
-- Dry-run: see what would be removed
-- Orphan packages cleanup
-- Cache cleanup: pacman, yay/paru, systemd journal, Flatpak
+- Installed packages sorted by size (biggest first), with live preview
+- Only what you installed yourself by default, `-a` shows everything
+- Multi-select with `Tab`
+- Removal modes: package only / with unused dependencies / with system configs
+- **Full removal**: package + leftovers in `~/.config`, `~/.cache`,
+  `~/.local/share`, `~/.local/state`, `~/.var/app`, `~/.name` (you review the list)
+- Dry-run: see what would be removed without touching anything
+- Unused dependencies (orphans) cleanup
+- Cache cleanup: package manager cache, yay/paru, systemd journal, Flatpak
 
 ## Install
 
-From the AUR:
+> **AUR status:** the AUR package is **temporarily unavailable**. Arch has
+> closed registration of new AUR accounts for now, so the package cannot be
+> published yet. It will appear in the AUR as soon as registration reopens.
+> Until then use one of the methods below, they work the same way.
+
+### Any distro: from source (recommended for now)
+
+```bash
+git clone https://github.com/bywrd/pkgclean
+cd pkgclean
+sudo make install        # installs to /usr/local/bin
+```
+
+Uninstall: `sudo make uninstall`. Install elsewhere: `make install PREFIX=~/.local`.
+
+### Arch Linux: build a package from this repo
+
+```bash
+git clone https://github.com/bywrd/pkgclean
+cd pkgclean
+makepkg -si
+```
+
+### Debian / Ubuntu / Mint: .deb
+
+Download `pkgclean_*_all.deb` from the Releases page, or build it yourself:
+
+```bash
+make deb
+sudo apt install ./build/pkgclean_*_all.deb
+```
+
+### Manually
+
+```bash
+sudo install -Dm755 pkgclean /usr/local/bin/pkgclean
+```
+
+### AUR (coming soon)
 
 ```bash
 yay -S pkgclean
 ```
 
-Manually:
-
-```bash
-git clone https://github.com/bywrd/pkgclean
-cd pkgclean
-sudo install -Dm755 pkgclean /usr/local/bin/pkgclean
-```
-
 ## Usage
 
 ```bash
-pkgclean        # only packages you installed yourself
+pkgclean        # packages you installed yourself
 pkgclean -a     # all packages, including dependencies
+pkgclean -h     # help
 ```
 
 Keys: arrows to move, type to search, `Tab` to select several, `Enter` to
-confirm, `Esc` to go back.
+confirm, `Esc` to go back. `fzf` is required (the script offers to install it).
+
+## What each backend does
+
+| Action | pacman | apt | dnf |
+|---|---|---|---|
+| Package only | `-R` | `remove` | `remove` (keeps unused deps) |
+| With dependencies | `-Rs` | `remove --auto-remove` | `remove` (cleans unused deps) |
+| With system configs | `-Rns` | `purge --auto-remove` | `remove` |
+| Dry-run | `-Rnsp` | `-s purge` | `remove --assumeno` |
+| Unused deps | `-Qdtq` + `-Rns` | `autoremove --purge` | `autoremove` |
+
+Note: on apt, `--auto-remove` also removes *other* packages that are no longer
+needed. Check the list apt shows before confirming.
 
 ## Warning
 
-The "full removal" mode deletes files from your home directory. It shows the
-list and asks for confirmation, but read it carefully: matching is done by
-package name.
+"Full removal" deletes files from your home directory. Leftovers are found by
+package name, so for generic names the list may contain unrelated things.
+The tool shows the list and asks for confirmation, but read it carefully.
+Package removal is always done by your package manager, which asks too.
+
+## Development
+
+```bash
+make check    # bash -n + shellcheck (if installed)
+make deb      # build .deb into build/
+```
 
 ## License
 
