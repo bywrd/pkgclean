@@ -23,12 +23,33 @@
 
 ## Установка
 
+| Система | Способ | Статус |
+|---|---|---|
+| Debian / Ubuntu / Mint | `.deb` из Releases | доступно |
+| Любой дистрибутив | `make install` из исходников | доступно |
+| Arch Linux | `makepkg -si` из этого репозитория | доступно |
+| Любой дистрибутив | скачать один файл | доступно |
+| Arch Linux | AUR (`yay -S pkgclean`) | **временно недоступно** |
+| Fedora | COPR (`dnf copr enable`) | запланировано |
+
 > **Статус AUR:** пакет в AUR **временно недоступен**. Arch сейчас закрыл
 > регистрацию новых аккаунтов в AUR, поэтому опубликовать пакет пока нельзя.
-> Он появится в AUR, как только регистрацию откроют. До этого используй
-> способы ниже, они работают так же.
+> Он появится в AUR, как только регистрацию откроют. Способы со статусом
+> «доступно» работают так же.
 
-### Любой дистрибутив: из исходников (пока рекомендуется)
+### Debian / Ubuntu / Mint: `.deb`
+
+Скачай `.deb` со страницы [Releases](https://github.com/bywrd/pkgclean/releases)
+и установи (версию в ссылке замени на последнюю):
+
+```bash
+wget https://github.com/bywrd/pkgclean/releases/download/v2.0.0/pkgclean_2.0.0_all.deb
+sudo apt install ./pkgclean_2.0.0_all.deb
+```
+
+`apt` сам подтянет `fzf` и `sudo`. Удаление: `sudo apt remove pkgclean`.
+
+### Любой дистрибутив (в том числе Fedora): из исходников
 
 ```bash
 git clone https://github.com/bywrd/pkgclean
@@ -37,6 +58,7 @@ sudo make install        # ставит в /usr/local/bin
 ```
 
 Удаление: `sudo make uninstall`. Установка в другое место: `make install PREFIX=~/.local`.
+Ещё нужен `fzf` (на Fedora: `sudo dnf install fzf`; скрипт сам предложит поставить).
 
 ### Arch Linux: собрать пакет из репозитория
 
@@ -46,25 +68,18 @@ cd pkgclean
 makepkg -si
 ```
 
-### Debian / Ubuntu / Mint: .deb
-
-Скачай `pkgclean_*_all.deb` со страницы Releases или собери сам:
+### Один файл
 
 ```bash
-make deb
-sudo apt install ./build/pkgclean_*_all.deb
-```
-
-### Вручную
-
-```bash
+curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.0.0/pkgclean
 sudo install -Dm755 pkgclean /usr/local/bin/pkgclean
 ```
 
-### AUR (скоро)
+### Позже
 
 ```bash
-yay -S pkgclean
+yay -S pkgclean                      # AUR, когда откроют регистрацию
+sudo dnf copr enable bywrd/pkgclean  # Fedora COPR
 ```
 
 ## Использование
@@ -105,6 +120,9 @@ pkgclean -h     # справка
 make check    # bash -n + shellcheck (если установлен)
 make deb      # собрать .deb в build/
 ```
+
+Релизы: запушь тег вроде `v2.0.1` (предварительно подними `VERSION` в `pkgclean`).
+GitHub Actions проверит скрипт, соберёт `.deb` и приложит его к релизу.
 
 ## Лицензия
 

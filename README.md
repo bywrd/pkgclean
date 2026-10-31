@@ -23,12 +23,33 @@ Works on **Arch** (`pacman`), **Debian / Ubuntu / Mint** (`apt`) and
 
 ## Install
 
+| Your system | Method | Status |
+|---|---|---|
+| Debian / Ubuntu / Mint | `.deb` from Releases | available |
+| Any distro | `make install` from source | available |
+| Arch Linux | `makepkg -si` from this repo | available |
+| Any distro | single file download | available |
+| Arch Linux | AUR (`yay -S pkgclean`) | **temporarily unavailable** |
+| Fedora | COPR (`dnf copr enable`) | planned |
+
 > **AUR status:** the AUR package is **temporarily unavailable**. Arch has
 > closed registration of new AUR accounts for now, so the package cannot be
 > published yet. It will appear in the AUR as soon as registration reopens.
-> Until then use one of the methods below, they work the same way.
+> The methods marked "available" work the same way in the meantime.
 
-### Any distro: from source (recommended for now)
+### Debian / Ubuntu / Mint: `.deb`
+
+Download the `.deb` from the [Releases](https://github.com/bywrd/pkgclean/releases)
+page and install it (replace the version with the latest one):
+
+```bash
+wget https://github.com/bywrd/pkgclean/releases/download/v2.0.0/pkgclean_2.0.0_all.deb
+sudo apt install ./pkgclean_2.0.0_all.deb
+```
+
+`apt` pulls in `fzf` and `sudo` automatically. Remove with `sudo apt remove pkgclean`.
+
+### Any distro (including Fedora): from source
 
 ```bash
 git clone https://github.com/bywrd/pkgclean
@@ -37,6 +58,7 @@ sudo make install        # installs to /usr/local/bin
 ```
 
 Uninstall: `sudo make uninstall`. Install elsewhere: `make install PREFIX=~/.local`.
+You also need `fzf` (`sudo dnf install fzf` on Fedora; the script offers to install it).
 
 ### Arch Linux: build a package from this repo
 
@@ -46,25 +68,18 @@ cd pkgclean
 makepkg -si
 ```
 
-### Debian / Ubuntu / Mint: .deb
-
-Download `pkgclean_*_all.deb` from the Releases page, or build it yourself:
+### Single file
 
 ```bash
-make deb
-sudo apt install ./build/pkgclean_*_all.deb
-```
-
-### Manually
-
-```bash
+curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.0.0/pkgclean
 sudo install -Dm755 pkgclean /usr/local/bin/pkgclean
 ```
 
-### AUR (coming soon)
+### Coming later
 
 ```bash
-yay -S pkgclean
+yay -S pkgclean                      # AUR, when registration reopens
+sudo dnf copr enable bywrd/pkgclean  # Fedora COPR
 ```
 
 ## Usage
@@ -104,6 +119,9 @@ Package removal is always done by your package manager, which asks too.
 make check    # bash -n + shellcheck (if installed)
 make deb      # build .deb into build/
 ```
+
+Releases: push a tag like `v2.0.1` (after bumping `VERSION` in `pkgclean`).
+GitHub Actions checks the script, builds the `.deb` and attaches it to the release.
 
 ## License
 
