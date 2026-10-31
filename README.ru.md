@@ -43,8 +43,8 @@
 и установи (версию в ссылке замени на последнюю):
 
 ```bash
-wget https://github.com/bywrd/pkgclean/releases/download/v2.0.0/pkgclean_2.0.0_all.deb
-sudo apt install ./pkgclean_2.0.0_all.deb
+wget https://github.com/bywrd/pkgclean/releases/download/v2.0.1/pkgclean_2.0.1_all.deb
+sudo apt install ./pkgclean_2.0.1_all.deb
 ```
 
 `apt` сам подтянет `fzf` и `sudo`. Удаление: `sudo apt remove pkgclean`.
@@ -71,7 +71,7 @@ makepkg -si
 ### Один файл
 
 ```bash
-curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.0.0/pkgclean
+curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.0.1/pkgclean
 sudo install -Dm755 pkgclean /usr/local/bin/pkgclean
 ```
 

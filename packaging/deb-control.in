@@ -4,7 +4,7 @@ Section: utils
 Priority: optional
 Architecture: all
 Depends: bash, fzf, sudo
-Recommends: flatpak
+Suggests: flatpak
 Maintainer: Ars <draganarseniy039@gmail.com>
 Homepage: https://github.com/bywrd/pkgclean
 Description: Interactive terminal uninstaller and system cleaner

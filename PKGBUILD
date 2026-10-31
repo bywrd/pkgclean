@@ -1,6 +1,6 @@
 # Maintainer: Ars <draganarseniy039@gmail.com>
 pkgname=pkgclean
-pkgver=2.0.0
+pkgver=2.0.1
 pkgrel=1
 pkgdesc='Interactive terminal tool to uninstall apps and clean leftovers (pacman, apt, dnf)'
 arch=('any')
