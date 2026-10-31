@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# pkgclean — интерактивное удаление приложений на Arch Linux
+# Зависимости: pacman, sudo, fzf (скрипт предложит поставить сам)
+# Необязательно: pacman-contrib (paccache), flatpak
+
+set -u
+export LC_ALL=C   # чтобы вывод pacman парсился одинаково
+
+# ---------- проверки ----------
+if [[ $EUID -eq 0 ]]; then
+    echo "Не запускай от root — скрипт сам вызывает sudo где нужно."
+    echo "(Иначе он не сможет найти твои файлы в ~/.config и т.д.)"
+    exit 1
+fi
+
+if ! command -v fzf >/dev/null; then
+    read -rp "Нужен fzf. Установить? [Y/n] " a
+    [[ ${a:-Y} =~ ^[Yy]$ ]] && sudo pacman -S --needed fzf || exit 1
+fi
+
+SHOW_ALL=0
+[[ ${1:-} == "-a" || ${1:-} == "--all" ]] && SHOW_ALL=1
+
+# ---------- вспомогательное ----------
+confirm() { read -rp "$1 [y/N] " a; [[ $a =~ ^[Yy]$ ]]; }
+pause()   { read -rp "Enter — продолжить..." _; }
+
+# Список пакетов: имя, размер, метки. Отсортировано по размеру (большие сверху)
+list_pkgs() {
+    local flag=(-e)
+    (( SHOW_ALL )) && flag=()
+    local aur
+    aur=" $(pacman -Qmq | tr '\n' ' ') "
+    pacman -Qi "${flag[@]}" | awk -v aur="$aur" '
+        /^Name/            { name=$3 }
+        /^Installed Size/  { v=$4; u=$5; sz=v" "u
+                             mib = (u=="KiB") ? v/1024 : (u=="GiB") ? v*1024 : (u=="B") ? v/1048576 : v }
+        /^Install Reason/  { dep = ($0 ~ /explicitly/) ? "" : "[dep]" }
+        /^$/               { if (name!="") emit() }
+        END                { if (name!="") emit() }
+        function emit(  tag) {
+            tag = dep
+            if (index(aur, " " name " ")) tag = tag "[AUR]"
+            printf "%.3f\t%s\t%s\t%s\n", mib, name, sz, tag
+            name=""; dep=""
+        }' |
+        sort -t$'\t' -k1,1nr |
+        awk -F'\t' '{ printf "%-38s %12s  %s\n", $2, $3, $4 }'
+}
+
+# Поиск пользовательских файлов приложения
+find_leftovers() {
+    local n=$1
+    n=${n%-bin}; n=${n%-git}; n=${n%-appimage}
+    (( ${#n} < 3 )) && return
+    local d
+    for d in "$HOME/.config" "$HOME/.local/share" "$HOME/.local/state" \
+             "$HOME/.cache" "$HOME/.var/app"; do
+        [[ -d $d ]] && find "$d" -maxdepth 1 -mindepth 1 -iname "*$n*" 2>/dev/null
+    done
+    find "$HOME" -maxdepth 1 -mindepth 1 -iname ".*$n*" 2>/dev/null
+}
+
+# Предложить удалить пользовательские данные (с выбором, что именно)
+clean_leftovers() {
+    local pkg
+    local -a found=() picked=()
+    for pkg in "$@"; do
+        while IFS= read -r p; do
+            [[ -n $p ]] && found+=("$p")
+        done < <(find_leftovers "$pkg")
+    done
+
+    if (( ${#found[@]} == 0 )); then
+        echo "Пользовательских файлов не найдено."
+        return
+    fi
+
+    # уникальные + с размерами
+    mapfile -t picked < <(
+        printf '%s\n' "${found[@]}" | sort -u | while IFS= read -r p; do
+            printf '%s\t%s\n' "$(du -sh "$p" 2>/dev/null | cut -f1)" "$p"
+        done |
+        fzf --multi --bind 'start:select-all' --delimiter=$'\t' \
+            --header $'Найдены файлы приложения. Tab — снять/поставить, Enter — УДАЛИТЬ выбранное,\nEsc — не удалять ничего. ВНИМАТЕЛЬНО посмотри список!' \
+            --prompt "удалить > " | cut -f2
+    )
+
+    (( ${#picked[@]} == 0 )) && { echo "Ничего не удаляю."; return; }
+
+    echo "Будет удалено безвозвратно:"
+    printf '  %s\n' "${picked[@]}"
+    if confirm "Точно удалить?"; then
+        local p
+        for p in "${picked[@]}"; do
+            # защита: только внутри $HOME и не сам $HOME
+            if [[ $p == "$HOME"/?* ]]; then
+                rm -rf -- "$p" && echo "удалено: $p"
+            fi
+        done
+    fi
+}
+
+# ---------- работа с выбранными пакетами ----------
+package_actions() {
+    local -a pkgs=("$@")
+    local header="Пакеты: ${pkgs[*]}"
+
+    local choice
+    choice=$(printf '%s\n' \
+        "1  Удалить только пакет                      (pacman -R)" \
+        "2  Удалить пакет + ненужные зависимости      (pacman -Rs)" \
+        "3  Удалить пакет + зависимости + конфиги     (pacman -Rns)" \
+        "4  ПОЛНОСТЬЮ: как 3 + файлы в ~/.config, ~/.cache, ~/.local" \
+        "5  Только удалить пользовательские файлы (пакет остаётся)" \
+        "6  Симуляция: что будет удалено (ничего не трогает)" \
+        "7  Показать файлы пакета" \
+        "0  Назад" |
+        fzf --header "$header" --prompt "действие > " --height 60% --reverse) || return
+    choice=${choice%% *}
+
+    case $choice in
+        1) sudo pacman -R   -- "${pkgs[@]}" ;;
+        2) sudo pacman -Rs  -- "${pkgs[@]}" ;;
+        3) sudo pacman -Rns -- "${pkgs[@]}" ;;
+        4)
+            sudo pacman -Rns -- "${pkgs[@]}" || { pause; return; }
+            # проверяем, что пакеты реально удалились
+            local gone=()
+            local p
+            for p in "${pkgs[@]}"; do pacman -Qq "$p" &>/dev/null || gone+=("$p"); done
+            (( ${#gone[@]} )) && clean_leftovers "${gone[@]}"
+            ;;
+        5) clean_leftovers "${pkgs[@]}" ;;
+        6) pacman -Rnsp -- "${pkgs[@]}" 2>&1 | less ;;
+        7) for p in "${pkgs[@]}"; do pacman -Ql "$p"; done | less ;;
+        *) return ;;
+    esac
+    pause
+}
+
+# ---------- меню: приложения ----------
+menu_apps() {
+    while true; do
+        local -a sel
+        mapfile -t sel < <(
+            list_pkgs | fzf --multi --reverse \
+                --prompt "пакет > " \
+                --header $'Tab — выбрать несколько, Enter — действия, Esc — назад\n(по умолчанию только то, что ставил ты сам; весь список: pkgclean -a)' \
+                --preview 'LC_ALL=C pacman -Qi {1} | grep -E "^(Name|Version|Description|Installed Size|Required By|Optional For|Depends On)"' \
+                --preview-window=right:50%:wrap |
+            awk '{print $1}'
+        )
+        (( ${#sel[@]} == 0 )) && return
+        package_actions "${sel[@]}"
+    done
+}
+
+# ---------- меню: сироты ----------
+menu_orphans() {
+    local -a orph
+    mapfile -t orph < <(pacman -Qdtq)
+    if (( ${#orph[@]} == 0 )); then
+        echo "Пакетов-сирот нет."; pause; return
+    fi
+    echo "Пакеты, которые ставились как зависимости, но больше никому не нужны:"
+    printf '  %s\n' "${orph[@]}"
+    confirm "Удалить их все (pacman -Rns)?" && sudo pacman -Rns -- "${orph[@]}"
+    pause
+}
+
+# ---------- меню: кэши ----------
+menu_cache() {
+    while true; do
+        local c
+        c=$(printf '%s\n' \
+            "1  Размер кэша pacman, ~/.cache и логов" \
+            "2  Очистить кэш pacman, оставить 2 последние версии (paccache -rk2)" \
+            "3  Очистить кэш pacman полностью, кроме установленных (pacman -Sc)" \
+            "4  Удалить кэш удалённых пакетов (paccache -ruk0)" \
+            "5  Почистить журнал systemd до 200 МБ" \
+            "6  Очистить кэш yay/paru (если есть)" \
+            "7  Flatpak: удалить неиспользуемые runtime" \
+            "0  Назад" |
+            fzf --prompt "кэш > " --height 60% --reverse) || return
+        c=${c%% *}
+        case $c in
+            1)
+                du -sh /var/cache/pacman/pkg 2>/dev/null
+                du -sh "$HOME/.cache" 2>/dev/null
+                journalctl --disk-usage 2>/dev/null
+                echo; echo "Самое тяжёлое в ~/.cache:"
+                du -sh "$HOME"/.cache/* 2>/dev/null | sort -rh | head -10
+                ;;
+            2) command -v paccache >/dev/null || sudo pacman -S --needed pacman-contrib
+               sudo paccache -rk2 ;;
+            3) sudo pacman -Sc ;;
+            4) command -v paccache >/dev/null || sudo pacman -S --needed pacman-contrib
+               sudo paccache -ruk0 ;;
+            5) sudo journalctl --vacuum-size=200M ;;
+            6) if   command -v yay  >/dev/null; then yay  -Sc
+               elif command -v paru >/dev/null; then paru -Sc
+               else echo "yay/paru не найдены."; fi ;;
+            7) if command -v flatpak >/dev/null; then flatpak uninstall --unused
+               else echo "flatpak не установлен."; fi ;;
+            *) return ;;
+        esac
+        pause
+    done
+}
+
+# ---------- главное меню ----------
+while true; do
+    m=$(printf '%s\n' \
+        "1  Приложения — выбрать и удалить" \
+        "2  Пакеты-сироты (ненужные зависимости)" \
+        "3  Кэши и мусор" \
+        "0  Выход" |
+        fzf --prompt "pkgclean > " --height 40% --reverse \
+            --header "Очистка Arch Linux") || exit 0
+    case ${m%% *} in
+        1) menu_apps ;;
+        2) menu_orphans ;;
+        3) menu_cache ;;
+        *) exit 0 ;;
+    esac
+done
