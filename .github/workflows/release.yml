@@ -1,0 +1,42 @@
+name: release
+
+# Runs when you push a tag like v2.0.0:
+# checks the script, builds the .deb and attaches it to the GitHub release.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match VERSION in the script
+        run: |
+          script_version="v$(bash pkgclean -V | awk '{print $2}')"
+          if [ "$script_version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match script version $script_version"
+            exit 1
+          fi
+
+      - name: Check script
+        run: make check
+
+      - name: Build .deb
+        run: make deb
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" build/*.deb --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" build/*.deb \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi
