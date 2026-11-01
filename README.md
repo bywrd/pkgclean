@@ -30,7 +30,7 @@ Works on **Arch** (`pacman`), **Debian / Ubuntu / Mint** (`apt`) and
 | Arch Linux | `makepkg -si` from this repo | available |
 | Any distro | single file download | available |
 | Arch Linux | AUR (`yay -S pkgclean`) | **temporarily unavailable** |
-| Fedora | COPR (`dnf copr enable`) | planned |
+| Fedora | COPR (`dnf copr enable`) | available |
 
 > **AUR status:** the AUR package is **temporarily unavailable**. Arch has
 > closed registration of new AUR accounts for now, so the package cannot be
@@ -48,6 +48,13 @@ sudo apt install ./pkgclean_2.0.1_all.deb
 ```
 
 `apt` pulls in `fzf` and `sudo` automatically. Remove with `sudo apt remove pkgclean`.
+
+### Fedora: COPR
+
+```bash
+sudo dnf copr enable bywrd/pkgclean
+sudo dnf install pkgclean
+```
 
 ### Any distro (including Fedora): from source
 
@@ -75,11 +82,10 @@ curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.0.1/pkgclean
 sudo install -Dm755 pkgclean /usr/local/bin/pkgclean
 ```
 
-### Coming later
+### AUR (coming soon)
 
 ```bash
-yay -S pkgclean                      # AUR, when registration reopens
-sudo dnf copr enable bywrd/pkgclean  # Fedora COPR
+yay -S pkgclean    # when AUR registration reopens
 ```
 
 ## Usage

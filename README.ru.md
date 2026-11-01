@@ -30,7 +30,7 @@
 | Arch Linux | `makepkg -si` из этого репозитория | доступно |
 | Любой дистрибутив | скачать один файл | доступно |
 | Arch Linux | AUR (`yay -S pkgclean`) | **временно недоступно** |
-| Fedora | COPR (`dnf copr enable`) | запланировано |
+| Fedora | COPR (`dnf copr enable`) | доступно |
 
 > **Статус AUR:** пакет в AUR **временно недоступен**. Arch сейчас закрыл
 > регистрацию новых аккаунтов в AUR, поэтому опубликовать пакет пока нельзя.
@@ -48,6 +48,13 @@ sudo apt install ./pkgclean_2.0.1_all.deb
 ```
 
 `apt` сам подтянет `fzf` и `sudo`. Удаление: `sudo apt remove pkgclean`.
+
+### Fedora: COPR
+
+```bash
+sudo dnf copr enable bywrd/pkgclean
+sudo dnf install pkgclean
+```
 
 ### Любой дистрибутив (в том числе Fedora): из исходников
 
@@ -75,11 +82,10 @@ curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.0.1/pkgclean
 sudo install -Dm755 pkgclean /usr/local/bin/pkgclean
 ```
 
-### Позже
+### AUR (скоро)
 
 ```bash
-yay -S pkgclean                      # AUR, когда откроют регистрацию
-sudo dnf copr enable bywrd/pkgclean  # Fedora COPR
+yay -S pkgclean    # когда откроют регистрацию в AUR
 ```
 
 ## Использование
