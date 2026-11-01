@@ -20,6 +20,11 @@ Works on **Arch** (`pacman`), **Debian / Ubuntu / Mint** (`apt`) and
 - Dry-run: see what would be removed without touching anything
 - Unused dependencies (orphans) cleanup
 - Cache cleanup: package manager cache, yay/paru, systemd journal, Flatpak
+- Flatpak and Snap apps in the same list as system packages
+- pipx, pip (`--user`), npm `-g`, cargo programs and AppImage files (with launcher cleanup)
+- Big files finder, folder size browser (like ncdu) and old downloads cleanup
+- Docker / Podman: stopped containers, images, unused volumes, prune
+- Old kernels (apt, dnf), archived logs, crash dumps, trash
 
 ## Install
 
@@ -43,8 +48,8 @@ Download the `.deb` from the [Releases](https://github.com/bywrd/pkgclean/releas
 page and install it (replace the version with the latest one):
 
 ```bash
-wget https://github.com/bywrd/pkgclean/releases/download/v2.0.1/pkgclean_2.0.1_all.deb
-sudo apt install ./pkgclean_2.0.1_all.deb
+wget https://github.com/bywrd/pkgclean/releases/download/v2.1.0/pkgclean_2.1.0_all.deb
+sudo apt install ./pkgclean_2.1.0_all.deb
 ```
 
 `apt` pulls in `fzf` and `sudo` automatically. Remove with `sudo apt remove pkgclean`.
@@ -78,7 +83,7 @@ makepkg -si
 ### Single file
 
 ```bash
-curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.0.1/pkgclean
+curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.1.0/pkgclean
 sudo install -Dm755 pkgclean /usr/local/bin/pkgclean
 ```
 
@@ -126,7 +131,7 @@ make check    # bash -n + shellcheck (if installed)
 make deb      # build .deb into build/
 ```
 
-Releases: push a tag like `v2.0.1` (after bumping `VERSION` in `pkgclean`).
+Releases: push a tag like `v2.1.1` (after bumping `VERSION` in `pkgclean`).
 GitHub Actions checks the script, builds the `.deb` and attaches it to the release.
 
 ## License

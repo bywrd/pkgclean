@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # pkgclean — интерактивное удаление приложений и очистка системы
-# Поддерживает: Arch (pacman), Debian/Ubuntu/Mint (apt), Fedora/RHEL (dnf)
+# Системные пакеты: Arch (pacman), Debian/Ubuntu/Mint (apt), Fedora/RHEL (dnf)
+# Дополнительно: Flatpak, Snap, pipx/pip/npm/cargo, AppImage, Docker/Podman,
+# большие файлы, старые ядра и логи.
 # Зависимости: fzf, sudo (скрипт предложит поставить fzf сам)
 # Лицензия: MIT
 
-VERSION="2.0.1"
+VERSION="2.1.0"
 
 set -u
 export LC_ALL=C   # чтобы вывод утилит парсился одинаково
@@ -13,6 +15,11 @@ SELF=$(readlink -f "${BASH_SOURCE[0]}")
 SHOW_ALL=0
 BACKEND=""
 SUDO="sudo"
+ENGINE=""
+ENGINE_CMD=()
+
+# Общая awk-функция: байты -> «1.5 MiB»
+AWK_HUM='function hum(b,  u, i) { split("B KiB MiB GiB TiB", u, " "); i = 1; while (b >= 1024 && i < 5) { b /= 1024; i++ } return sprintf("%.1f %s", b, u[i]) }'
 
 # ======================================================================
 #  Общие вспомогательные функции
@@ -20,6 +27,10 @@ SUDO="sudo"
 
 confirm() { local a; read -rp "$1 [y/N] " a; [[ $a =~ ^[Yy]$ ]]; }
 pause()   { local _; read -rp "Enter — продолжить..." _; }
+
+human() {
+    numfmt --to=iec-i --suffix=B --format='%.1f' "${1:-0}" 2>/dev/null || echo "${1:-0} B"
+}
 
 detect_backend() {
     if command -v pacman >/dev/null; then
@@ -42,11 +53,30 @@ install_fzf() {
     esac
 }
 
+# Безопасное удаление: только внутри $HOME, без .ssh и .gnupg, с подтверждением
+delete_paths() {
+    local p real
+    local -a ok=()
+    for p in "$@"; do
+        real=$(realpath -m -- "$p")
+        if [[ $real == "$HOME"/?* && $real != "$HOME"/.ssh* && $real != "$HOME"/.gnupg* ]]; then
+            ok+=("$real")
+        else
+            echo "пропускаю (вне домашней папки или защищено): $p"
+        fi
+    done
+    (( ${#ok[@]} )) || return 1
+    echo "Будет удалено безвозвратно:"
+    du -sh -- "${ok[@]}" 2>/dev/null
+    confirm "Точно удалить?" || return 1
+    rm -rf -- "${ok[@]}" && echo "Готово."
+}
+
 # ======================================================================
-#  Бэкенды: pacman / apt / dnf
+#  Бэкенды системных пакетов: pacman / apt / dnf
 # ======================================================================
 
-# Сырой список: ключ_сортировки \t имя \t размер \t метки
+# Сырой список: байты \t имя \t размер \t метки
 be_list_raw() {
     case $BACKEND in
     pacman)
@@ -64,7 +94,7 @@ be_list_raw() {
             function emit(  tag) {
                 tag = dep
                 if (index(aur, " " name " ")) tag = tag "[AUR]"
-                printf "%.3f\t%s\t%s\t%s\n", mib, name, sz, tag
+                printf "%.0f\t%s\t%s\t%s\n", mib * 1048576, name, sz, tag
                 name=""; dep=""
             }'
         ;;
@@ -73,12 +103,7 @@ be_list_raw() {
         manual=" $(apt-mark showmanual 2>/dev/null | tr '\n' ' ') "
         [[ $manual == "  " ]] && all=1
         dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Installed-Size}\n' 2>/dev/null |
-        awk -F'\t' -v manual="$manual" -v all="$all" '
-            function hum(b,  u, i) {
-                split("B KiB MiB GiB", u, " "); i = 1
-                while (b >= 1024 && i < 4) { b /= 1024; i++ }
-                return sprintf("%.1f %s", b, u[i])
-            }
+        awk -F'\t' -v manual="$manual" -v all="$all" "$AWK_HUM"'
             $1 !~ /^ii/ { next }
             {
                 name = $2; base = name; sub(/:.*/, "", base)
@@ -93,12 +118,7 @@ be_list_raw() {
         user=" $(dnf repoquery --userinstalled --qf '%{name}\n' 2>/dev/null | sort -u | tr '\n' ' ') "
         [[ $user == "  " ]] && all=1
         rpm -qa --qf '%{NAME}\t%{SIZE}\n' 2>/dev/null |
-        awk -F'\t' -v user="$user" -v all="$all" '
-            function hum(b,  u, i) {
-                split("B KiB MiB GiB", u, " "); i = 1
-                while (b >= 1024 && i < 4) { b /= 1024; i++ }
-                return sprintf("%.1f %s", b, u[i])
-            }
+        awk -F'\t' -v user="$user" -v all="$all" "$AWK_HUM"'
             $1 == "gpg-pubkey" { next }
             { sz[$1] += $2 }
             END {
@@ -112,15 +132,48 @@ be_list_raw() {
     esac
 }
 
-# Готовый список для fzf: самые большие сверху
-be_list() {
-    be_list_raw | sort -t$'\t' -k1,1nr |
-        awk -F'\t' '{ printf "%-38s %12s  %s\n", $2, $3, $4 }'
+# Flatpak-приложения: имя в списке с префиксом flatpak:
+flatpak_list_raw() {
+    command -v flatpak >/dev/null || return 0
+    flatpak list --app --columns=application,size 2>/dev/null |
+    awk -F'\t' "$AWK_HUM"'
+        function tobytes(s,  p, v, u, m) {
+            split(s, p, " "); v = p[1] + 0; u = p[2]; m = 1
+            if (u == "kB") m = 1000; else if (u == "MB") m = 1000000
+            else if (u == "GB") m = 1000000000; else if (u == "TB") m = 1000000000000
+            return v * m
+        }
+        $1 != "" { b = tobytes($2); printf "%.0f\tflatpak:%s\t%s\t\n", b, $1, hum(b) }'
+}
+
+# Snap-приложения: имя в списке с префиксом snap:
+snap_list_raw() {
+    command -v snap >/dev/null || return 0
+    local name rev notes f bytes
+    snap list 2>/dev/null | tail -n +2 | while read -r name _ rev _ _ notes; do
+        if (( ! SHOW_ALL )) && [[ $name == snapd || $name == bare || ${notes:-} == *base* ]]; then
+            continue
+        fi
+        f="/var/lib/snapd/snaps/${name}_${rev}.snap"
+        bytes=$(stat -c %s "$f" 2>/dev/null || echo 0)
+        printf '%s\tsnap:%s\t%s\t\n' "$bytes" "$name" "$(human "$bytes")"
+    done
+}
+
+# Общий список для fzf: самые большие сверху
+app_list() {
+    { be_list_raw; flatpak_list_raw; snap_list_raw; } |
+        sort -t$'\t' -k1,1nr |
+        awk -F'\t' '{ printf "%-44s %12s  %s\n", $2, $3, $4 }'
 }
 
 # Информация о пакете (для окна предпросмотра)
 be_preview() {
     local p=$1
+    case $p in
+        flatpak:*) flatpak info "${p#flatpak:}" 2>/dev/null | head -20; return ;;
+        snap:*)    snap info "${p#snap:}" 2>/dev/null | head -20; return ;;
+    esac
     case $BACKEND in
     pacman)
         pacman -Qi "$p" 2>/dev/null |
@@ -230,21 +283,11 @@ clean_leftovers() {
     )
 
     (( ${#picked[@]} == 0 )) && { echo "Ничего не удаляю."; return; }
-
-    echo "Будет удалено безвозвратно:"
-    printf '  %s\n' "${picked[@]}"
-    if confirm "Точно удалить?"; then
-        for p in "${picked[@]}"; do
-            # защита: только внутри $HOME и не сам $HOME
-            if [[ $p == "$HOME"/?* ]]; then
-                rm -rf -- "$p" && echo "удалено: $p"
-            fi
-        done
-    fi
+    delete_paths "${picked[@]}"
 }
 
 # ======================================================================
-#  Меню
+#  Меню 1: приложения (пакеты + Flatpak + Snap)
 # ======================================================================
 
 package_actions() {
@@ -281,21 +324,538 @@ package_actions() {
     pause
 }
 
+flatpak_actions() {
+    local choice a
+    choice=$(printf '%s\n' \
+        "1  Удалить приложение" \
+        "2  Удалить приложение и его данные (~/.var/app)" \
+        "3  Показать информацию" \
+        "0  Назад" |
+        fzf --header "Flatpak: $*" --prompt "действие > " --height 50% --reverse) || return
+    choice=${choice%% *}
+    case $choice in
+        1) flatpak uninstall "$@" ;;
+        2) flatpak uninstall --delete-data "$@" ;;
+        3) for a in "$@"; do flatpak info "$a"; done | less; return ;;
+        *) return ;;
+    esac
+    confirm "Удалить заодно неиспользуемые runtime?" && flatpak uninstall --unused
+    pause
+}
+
+snap_actions() {
+    local choice a
+    choice=$(printf '%s\n' \
+        "1  Удалить (данные сохранятся в снимке snap saved)" \
+        "2  Удалить полностью, без снимка (--purge)" \
+        "3  Показать информацию" \
+        "0  Назад" |
+        fzf --header "Snap: $*" --prompt "действие > " --height 50% --reverse) || return
+    choice=${choice%% *}
+    case $choice in
+        1) $SUDO snap remove "$@" ;;
+        2) $SUDO snap remove --purge "$@" ;;
+        3) for a in "$@"; do snap info "$a"; done | less; return ;;
+        *) return ;;
+    esac
+    pause
+}
+
+# Раскладывает выбор по источникам и вызывает нужное меню
+dispatch_selection() {
+    local x
+    local -a sys=() fp=() sn=()
+    for x in "$@"; do
+        case $x in
+            flatpak:*) fp+=("${x#flatpak:}") ;;
+            snap:*)    sn+=("${x#snap:}") ;;
+            *)         sys+=("$x") ;;
+        esac
+    done
+    (( ${#sys[@]} )) && package_actions "${sys[@]}"
+    (( ${#fp[@]} ))  && flatpak_actions "${fp[@]}"
+    (( ${#sn[@]} ))  && snap_actions "${sn[@]}"
+    return 0
+}
+
 menu_apps() {
     while true; do
         local -a sel
         mapfile -t sel < <(
-            be_list | fzf --multi --reverse \
+            app_list | fzf --multi --reverse \
                 --prompt "пакет > " \
-                --header $'Tab — выбрать несколько, Enter — действия, Esc — назад\n(по умолчанию только то, что ставил ты сам; весь список: pkgclean -a)' \
+                --header $'Tab — выбрать несколько, Enter — действия, Esc — назад\nflatpak: и snap: — приложения из Flatpak и Snap. Весь список: pkgclean -a' \
                 --preview "\"$SELF\" --_preview {1}" \
                 --preview-window=right:50%:wrap |
             awk '{print $1}'
         )
         (( ${#sel[@]} == 0 )) && return
-        package_actions "${sel[@]}"
+        dispatch_selection "${sel[@]}"
     done
 }
+
+# ======================================================================
+#  Меню 2: программы вне пакетного менеджера
+# ======================================================================
+
+# Каждая функция печатает строки: байты \t id \t размер \t заметка
+
+pipx_items() {
+    command -v pipx >/dev/null || return 0
+    local venvs name ver d b
+    venvs=$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null)
+    [[ -z $venvs ]] && venvs="${PIPX_HOME:-$HOME/.local/share/pipx}/venvs"
+    pipx list --short 2>/dev/null | while read -r name ver; do
+        [[ -z $name ]] && continue
+        d="$venvs/$name"
+        [[ -d $d ]] || d="$HOME/.local/pipx/venvs/$name"
+        b=$(du -sb "$d" 2>/dev/null | cut -f1)
+        printf '%s\tpipx:%s\t%s\t%s\n' "${b:-0}" "$name" "$(human "${b:-0}")" "$ver"
+    done
+}
+
+pip_items() {
+    local py
+    py=$(command -v python3 || command -v python) || return 0
+    "$py" -m pip list --user --format=freeze 2>/dev/null |
+        awk -F'==' 'NF >= 2 { printf "0\tpip:%s\t-\t%s\n", $1, $2 }'
+}
+
+npm_items() {
+    command -v npm >/dev/null || return 0
+    local root p name b
+    root=$(npm root -g 2>/dev/null) || return 0
+    [[ -z $root ]] && return 0
+    npm ls -g --depth=0 --parseable 2>/dev/null | tail -n +2 | while IFS= read -r p; do
+        name=${p#"$root"/}
+        [[ $name == npm || $name == corepack ]] && continue
+        b=$(du -sb "$p" 2>/dev/null | cut -f1)
+        printf '%s\tnpm:%s\t%s\t\n' "${b:-0}" "$name" "$(human "${b:-0}")"
+    done
+}
+
+cargo_items() {
+    command -v cargo >/dev/null || return 0
+    local bindir=${CARGO_HOME:-$HOME/.cargo}/bin
+    local name ver bins bin total s
+    cargo install --list 2>/dev/null | awk '
+        /^[^[:space:]]/ { if (n != "") print n "\t" v "\t" b; n = $1; v = $2; sub(/:$/, "", v); b = ""; next }
+        /^[[:space:]]+/ { gsub(/^[[:space:]]+/, ""); b = b " " $0 }
+        END { if (n != "") print n "\t" v "\t" b }' |
+    while IFS=$'\t' read -r name ver bins; do
+        total=0
+        for bin in $bins; do
+            s=$(stat -c %s "$bindir/$bin" 2>/dev/null || echo 0)
+            total=$(( total + s ))
+        done
+        printf '%s\tcargo:%s\t%s\t%s\n' "$total" "$name" "$(human "$total")" "$ver"
+    done
+}
+
+appimage_items() {
+    local d f b
+    for d in "$HOME/Applications" "$HOME/AppImages" "$HOME/.local/bin" \
+             "$HOME/bin" "$HOME/opt" "$HOME/Downloads" "$HOME/Desktop"; do
+        [[ -d $d ]] && find "$d" -maxdepth 2 -type f -iname '*.AppImage' 2>/dev/null
+    done | sort -u | while IFS= read -r f; do
+        b=$(stat -c %s "$f" 2>/dev/null || echo 0)
+        printf '%s\tappimage:%s\t%s\t\n' "$b" "$f" "$(human "$b")"
+    done
+}
+
+external_list() {
+    { pipx_items; pip_items; npm_items; cargo_items; appimage_items; } |
+        sort -t$'\t' -k1,1nr | cut -f2-
+}
+
+# Из имени файла AppImage получаем имя программы для поиска остатков
+appimage_base_name() {
+    local full n
+    full=$(basename -- "$1")
+    full=${full%.[Aa]pp[Ii]mage}
+    n=$(printf '%s' "$full" | sed -E 's/[-_](x86_64|amd64|aarch64|arm64|linux)//g; s/[-_.]?[vV]?[0-9].*$//')
+    [[ -z $n ]] && n=$full
+    printf '%s\n' "$n"
+}
+
+pip_uninstall() {
+    local py
+    py=$(command -v python3 || command -v python) || return 1
+    "$py" -m pip uninstall -y "$1" && return 0
+    if confirm "pip отказался (окружение «externally managed»). Повторить с --break-system-packages? Затронет только пользовательские пакеты"; then
+        "$py" -m pip uninstall -y --break-system-packages "$1"
+    fi
+}
+
+npm_uninstall() {
+    local prefix
+    prefix=$(npm prefix -g 2>/dev/null)
+    if [[ -w ${prefix:-/nonexistent}/lib/node_modules ]]; then
+        npm uninstall -g "$@"
+    else
+        $SUDO npm uninstall -g "$@"
+    fi
+}
+
+appimage_remove() {
+    local f=$1 withconf=$2
+    local apps="$HOME/.local/share/applications" d
+    if [[ $f != "$HOME"/?* ]]; then
+        echo "пропускаю (вне домашней папки): $f"
+        return 1
+    fi
+    if [[ -d $apps ]]; then
+        while IFS= read -r d; do
+            rm -f -- "$d" && echo "удалён ярлык: $d"
+        done < <(grep -lF -- "$f" "$apps"/*.desktop 2>/dev/null)
+    fi
+    rm -f -- "$f" && echo "удалён файл: $f"
+    if [[ $withconf == 1 ]]; then
+        clean_leftovers "$(appimage_base_name "$f")"
+    fi
+}
+
+external_actions() {
+    local x n choice withconf=0
+    local -a pipx=() pip=() npm=() cargo=() appi=()
+    for x in "$@"; do
+        case $x in
+            pipx:*)     pipx+=("${x#pipx:}") ;;
+            pip:*)      pip+=("${x#pip:}") ;;
+            npm:*)      npm+=("${x#npm:}") ;;
+            cargo:*)    cargo+=("${x#cargo:}") ;;
+            appimage:*) appi+=("${x#appimage:}") ;;
+        esac
+    done
+
+    choice=$(printf '%s\n' \
+        "1  Удалить" \
+        "2  Удалить + пользовательские файлы (для AppImage: ярлыки и настройки)" \
+        "0  Назад" |
+        fzf --header "Выбрано: $*" --prompt "действие > " --height 50% --reverse) || return
+    case ${choice%% *} in
+        1) withconf=0 ;;
+        2) withconf=1 ;;
+        *) return ;;
+    esac
+
+    for n in "${pipx[@]}";  do pipx uninstall "$n"; done
+    for n in "${pip[@]}";   do pip_uninstall "$n"; done
+    (( ${#npm[@]} )) && npm_uninstall "${npm[@]}"
+    for n in "${cargo[@]}"; do cargo uninstall "$n"; done
+    for n in "${appi[@]}";  do appimage_remove "$n" "$withconf"; done
+    pause
+}
+
+menu_external() {
+    while true; do
+        local items
+        items=$(external_list)
+        if [[ -z $items ]]; then
+            echo "Не найдено программ pipx, pip (--user), npm -g, cargo и файлов AppImage."
+            pause; return
+        fi
+        local -a sel
+        mapfile -t sel < <(
+            printf '%s\n' "$items" | fzf --multi --reverse --delimiter=$'\t' \
+                --prompt "программа > " \
+                --header $'Tab — выбрать несколько, Enter — действия, Esc — назад\npipx: pip: npm: cargo: appimage: — откуда программа' |
+            cut -f1
+        )
+        (( ${#sel[@]} == 0 )) && return
+        external_actions "${sel[@]}"
+    done
+}
+
+# ======================================================================
+#  Меню 3: большие файлы и папки
+# ======================================================================
+
+big_files() {
+    local min=${1:-100}
+    local -a picked
+    echo "Ищу файлы от ${min} МБ в $HOME (это может занять время)..."
+    mapfile -t picked < <(
+        find "$HOME" -xdev -type f -size +"${min}"M -printf '%s\t%p\n' 2>/dev/null |
+        sort -t$'\t' -k1,1nr | head -300 |
+        awk -F'\t' "$AWK_HUM"' { printf "%s\t%s\n", hum($1), $2 }' |
+        fzf --multi --reverse --delimiter=$'\t' --prompt "файл > " \
+            --header $'Tab — отметить, Enter — удалить отмеченные, Esc — назад' |
+        cut -f2-
+    )
+    (( ${#picked[@]} )) && delete_paths "${picked[@]}"
+    pause
+}
+
+# Мини-ncdu: обзор папок по размеру
+browse_dir() {
+    local start=${1%/} dir
+    dir=$start
+    local out res key line sel
+    while true; do
+        echo "Считаю размеры в $dir ..."
+        out=$(du -a -x -b --max-depth=1 -- "$dir" 2>/dev/null |
+              sort -t$'\t' -k1,1nr |
+              awk -F'\t' -v d="$dir" "$AWK_HUM"' $2 != d { printf "%s\t%s\n", hum($1), $2 }')
+        if ! res=$(printf '%s\n' "$out" | fzf --reverse --delimiter=$'\t' --expect=ctrl-d \
+                --prompt "$dir > " \
+                --header $'Enter — открыть папку · Ctrl-D — удалить · Esc — вверх (или выход)'); then
+            [[ $dir == "$start" ]] && return
+            dir=$(dirname -- "$dir")
+            continue
+        fi
+        key=$(head -1 <<<"$res")
+        line=$(sed -n 2p <<<"$res")
+        sel=${line#*$'\t'}
+        if [[ $key == ctrl-d ]]; then
+            delete_paths "$sel"; pause
+            continue
+        fi
+        [[ -d $sel ]] && dir=$sel
+    done
+}
+
+old_downloads() {
+    local d="$HOME/Downloads" days=30
+    if [[ ! -d $d ]]; then
+        echo "Нет папки $d"; pause; return
+    fi
+    local -a picked
+    mapfile -t picked < <(
+        find "$d" -maxdepth 2 -type f -mtime +"$days" \( \
+            -iname '*.zip' -o -iname '*.tar' -o -iname '*.tar.*' -o -iname '*.tgz' \
+            -o -iname '*.gz' -o -iname '*.xz' -o -iname '*.bz2' -o -iname '*.zst' \
+            -o -iname '*.7z' -o -iname '*.rar' -o -iname '*.iso' -o -iname '*.deb' \
+            -o -iname '*.rpm' -o -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' \
+            -o -iname '*.apk' \) -printf '%s\t%TY-%Tm-%Td\t%p\n' 2>/dev/null |
+        sort -t$'\t' -k1,1nr |
+        awk -F'\t' "$AWK_HUM"' { printf "%s\t%s\t%s\n", hum($1), $2, $3 }' |
+        fzf --multi --reverse --delimiter=$'\t' --prompt "файл > " \
+            --header $'Архивы и установщики в Загрузках старше 30 дней.\nTab — отметить, Enter — удалить отмеченные, Esc — назад' |
+        cut -f3-
+    )
+    (( ${#picked[@]} )) && delete_paths "${picked[@]}"
+    pause
+}
+
+menu_bigfiles() {
+    while true; do
+        local c
+        c=$(printf '%s\n' \
+            "1  Крупные файлы (от 100 МБ) в домашней папке" \
+            "2  Обзор папок по размеру (как ncdu)" \
+            "3  Старые архивы и установщики в Загрузках" \
+            "4  Кэши программ (~/.cache)" \
+            "0  Назад" |
+            fzf --prompt "место > " --height 50% --reverse) || return
+        case ${c%% *} in
+            1) big_files 100 ;;
+            2) browse_dir "$HOME" ;;
+            3) old_downloads ;;
+            4) browse_dir "$HOME/.cache" ;;
+            *) return ;;
+        esac
+    done
+}
+
+# ======================================================================
+#  Меню 4: Docker / Podman
+# ======================================================================
+
+container_engine() {
+    local -a engines=()
+    command -v docker >/dev/null && engines+=(docker)
+    command -v podman >/dev/null && engines+=(podman)
+    case ${#engines[@]} in
+        0) echo "Docker и Podman не найдены."; return 1 ;;
+        1) ENGINE=${engines[0]} ;;
+        *) ENGINE=$(printf '%s\n' "${engines[@]}" |
+               fzf --prompt "движок > " --height 30% --reverse) || return 1 ;;
+    esac
+    if [[ $ENGINE == docker ]] && ! docker info &>/dev/null; then
+        ENGINE_CMD=(sudo docker)
+    else
+        ENGINE_CMD=("$ENGINE")
+    fi
+}
+
+eng() { "${ENGINE_CMD[@]}" "$@"; }
+
+menu_containers() {
+    container_engine || { pause; return; }
+    while true; do
+        local -a items=(
+            "1  Сколько места занимают образы, контейнеры и тома"
+            "2  Остановленные контейнеры: выбрать и удалить"
+            "3  Образы: выбрать и удалить"
+            "4  Все неиспользуемые образы: удалить (image prune -a)"
+            "5  Тома без контейнеров: выбрать и удалить (ДАННЫЕ ПРОПАДУТ)"
+            "6  Быстрая очистка (system prune)"
+        )
+        [[ $ENGINE == docker ]] && items+=("7  Кэш сборки (builder prune)")
+        items+=("0  Назад")
+
+        local c
+        c=$(printf '%s\n' "${items[@]}" |
+            fzf --prompt "$ENGINE > " --height 60% --reverse) || return
+        local -a ids
+        case ${c%% *} in
+            1) eng system df ;;
+            2)
+                mapfile -t ids < <(
+                    eng ps -a --filter status=exited --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}' |
+                    fzf --multi --reverse --delimiter=$'\t' --prompt "контейнер > " \
+                        --header $'Tab — отметить, Enter — удалить отмеченные, Esc — назад' | cut -f1)
+                (( ${#ids[@]} )) && eng rm "${ids[@]}"
+                ;;
+            3)
+                mapfile -t ids < <(
+                    eng images --format '{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Size}}' |
+                    fzf --multi --reverse --delimiter=$'\t' --prompt "образ > " \
+                        --header $'Tab — отметить, Enter — удалить отмеченные, Esc — назад' | cut -f1)
+                (( ${#ids[@]} )) && eng rmi "${ids[@]}"
+                ;;
+            4) eng image prune -a ;;
+            5)
+                mapfile -t ids < <(
+                    eng volume ls -f dangling=true --format '{{.Name}}' |
+                    fzf --multi --reverse --prompt "том > " \
+                        --header $'Данные в томах пропадут навсегда!\nTab — отметить, Enter — удалить отмеченные, Esc — назад')
+                (( ${#ids[@]} )) && eng volume rm "${ids[@]}"
+                ;;
+            6) eng system prune ;;
+            7) eng builder prune ;;
+            *) return ;;
+        esac
+        pause
+    done
+}
+
+# ======================================================================
+#  Меню 5: старые ядра и логи
+# ======================================================================
+
+old_kernels() {
+    local running v
+    running=$(uname -r)
+    local -a vers=() cand=() picked=() pkgs=()
+    case $BACKEND in
+    pacman)
+        echo "В Arch ядра — отдельные пакеты, старые версии не накапливаются."
+        echo "Установленные ядра:"
+        pacman -Qq | grep -E '^linux(-lts|-zen|-hardened|-rt)?$'
+        echo "Работает сейчас: $running"
+        return
+        ;;
+    apt)
+        mapfile -t vers < <(
+            dpkg-query -W -f='${Package}\t${db:Status-Abbrev}\n' 'linux-image-[0-9]*' 2>/dev/null |
+            awk -F'\t' '$2 ~ /^ii/ { sub(/^linux-image-/, "", $1); print $1 }' | sort -V)
+        ;;
+    dnf)
+        mapfile -t vers < <(
+            rpm -qa 'kernel' 'kernel-core' --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' 2>/dev/null | sort -Vu)
+        ;;
+    esac
+
+    if (( ${#vers[@]} == 0 )); then
+        echo "Установленных ядер не найдено."; return
+    fi
+    for v in "${vers[@]}"; do
+        [[ $v == "$running" || $v == "${vers[-1]}" ]] || cand+=("$v")
+    done
+    if (( ${#cand[@]} == 0 )); then
+        echo "Старых ядер нет: остались только текущее ($running) и новейшее."; return
+    fi
+
+    mapfile -t picked < <(
+        printf '%s\n' "${cand[@]}" |
+        fzf --multi --reverse --prompt "ядро > " \
+            --header "Работает сейчас: $running. Текущее и новейшее ядра не показаны (запасное остаётся).
+Tab — отметить, Enter — удалить отмеченные, Esc — назад")
+    (( ${#picked[@]} )) || return
+
+    case $BACKEND in
+    apt)
+        for v in "${picked[@]}"; do
+            while IFS= read -r p; do pkgs+=("$p"); done < <(dpkg-query -W -f='${Package}\n' "linux-*-$v" 2>/dev/null)
+        done
+        (( ${#pkgs[@]} )) && $SUDO apt-get purge "${pkgs[@]}"
+        ;;
+    dnf)
+        for v in "${picked[@]}"; do pkgs+=("kernel*-$v"); done
+        $SUDO dnf remove "${pkgs[@]}"
+        ;;
+    esac
+}
+
+journal_menu() {
+    journalctl --disk-usage 2>/dev/null || { echo "journalctl недоступен."; return; }
+    local c
+    c=$(printf '%s\n' \
+        "1  Оставить до 200 МБ" \
+        "2  Оставить до 500 МБ" \
+        "3  Оставить логи за последние 2 недели" \
+        "4  Оставить логи за последнюю неделю" \
+        "0  Назад" |
+        fzf --prompt "журнал > " --height 40% --reverse) || return
+    case ${c%% *} in
+        1) $SUDO journalctl --vacuum-size=200M ;;
+        2) $SUDO journalctl --vacuum-size=500M ;;
+        3) $SUDO journalctl --vacuum-time=2weeks ;;
+        4) $SUDO journalctl --vacuum-time=1week ;;
+        *) return ;;
+    esac
+}
+
+old_logs() {
+    local -a files
+    mapfile -t files < <($SUDO find /var/log -xdev -type f \( \
+        -name '*.gz' -o -name '*.xz' -o -name '*.zst' -o -name '*.old' -o -name '*.[0-9]' \) 2>/dev/null)
+    if (( ${#files[@]} == 0 )); then
+        echo "Старых архивных логов в /var/log нет."; return
+    fi
+    echo "Найдено файлов: ${#files[@]}"
+    $SUDO du -ch -- "${files[@]}" 2>/dev/null | tail -1
+    confirm "Показать список?" && printf '%s\n' "${files[@]}" | less
+    confirm "Удалить эти архивные логи?" && $SUDO rm -f -- "${files[@]}" && echo "Готово."
+}
+
+coredumps() {
+    local d seen=0
+    for d in /var/lib/systemd/coredump /var/crash; do
+        [[ -d $d ]] || continue
+        seen=1
+        $SUDO du -sh "$d" 2>/dev/null
+        confirm "Удалить все файлы в $d?" && $SUDO find "$d" -type f -delete && echo "Готово."
+    done
+    (( seen )) || echo "Дампов падений не найдено."
+}
+
+menu_system() {
+    while true; do
+        local c
+        c=$(printf '%s\n' \
+            "1  Старые ядра (apt, dnf)" \
+            "2  Журнал systemd: размер и очистка" \
+            "3  Старые архивные логи в /var/log" \
+            "4  Дампы падений (coredump, /var/crash)" \
+            "0  Назад" |
+            fzf --prompt "система > " --height 50% --reverse) || return
+        case ${c%% *} in
+            1) old_kernels ;;
+            2) journal_menu ;;
+            3) old_logs ;;
+            4) coredumps ;;
+            *) return ;;
+        esac
+        pause
+    done
+}
+
+# ======================================================================
+#  Меню 6 и 7: сироты, кэши
+# ======================================================================
 
 menu_orphans() {
     case $BACKEND in
@@ -325,9 +885,20 @@ cache_sizes() {
         [[ -d $d ]] && du -sh "$d" 2>/dev/null
     done
     du -sh "$HOME/.cache" 2>/dev/null
+    du -sh "$HOME/.local/share/Trash" 2>/dev/null
     journalctl --disk-usage 2>/dev/null
     echo; echo "Самое тяжёлое в ~/.cache:"
     du -sh "$HOME"/.cache/* 2>/dev/null | sort -rh | head -10
+}
+
+empty_trash() {
+    local t="$HOME/.local/share/Trash"
+    if [[ ! -d $t ]]; then
+        echo "Корзина пуста."; return
+    fi
+    du -sh "$t" 2>/dev/null
+    confirm "Очистить корзину?" &&
+        find "$t/files" "$t/info" -mindepth 1 -delete 2>/dev/null && echo "Готово."
 }
 
 menu_cache() {
@@ -341,7 +912,7 @@ menu_cache() {
             items+=("4  Arch: удалить кэш уже удалённых пакетов"
                     "5  Arch: очистить кэш yay/paru")
         fi
-        items+=("6  Почистить журнал systemd до 200 МБ"
+        items+=("6  Очистить корзину (~/.local/share/Trash)"
                 "7  Flatpak: удалить неиспользуемые runtime"
                 "0  Назад")
 
@@ -364,7 +935,7 @@ menu_cache() {
             5) if   command -v yay  >/dev/null; then yay  -Sc
                elif command -v paru >/dev/null; then paru -Sc
                else echo "yay/paru не найдены."; fi ;;
-            6) $SUDO journalctl --vacuum-size=200M ;;
+            6) empty_trash ;;
             7) if command -v flatpak >/dev/null; then flatpak uninstall --unused
                else echo "flatpak не установлен."; fi ;;
             *) return ;;
@@ -373,20 +944,32 @@ menu_cache() {
     done
 }
 
+# ======================================================================
+#  Главное меню
+# ======================================================================
+
 main_menu() {
     local m
     while true; do
         m=$(printf '%s\n' \
-            "1  Приложения — выбрать и удалить" \
-            "2  Ненужные зависимости (сироты)" \
-            "3  Кэши и мусор" \
+            "1  Приложения: пакеты, Flatpak, Snap" \
+            "2  Программы вне пакетного менеджера: pipx, pip, npm, cargo, AppImage" \
+            "3  Большие файлы и папки" \
+            "4  Docker / Podman" \
+            "5  Старые ядра и логи" \
+            "6  Ненужные зависимости (сироты)" \
+            "7  Кэши и мусор" \
             "0  Выход" |
-            fzf --prompt "pkgclean > " --height 40% --reverse \
+            fzf --prompt "pkgclean > " --height 50% --reverse \
                 --header "pkgclean $VERSION · менеджер пакетов: $BACKEND") || exit 0
         case ${m%% *} in
             1) menu_apps ;;
-            2) menu_orphans ;;
-            3) menu_cache ;;
+            2) menu_external ;;
+            3) menu_bigfiles ;;
+            4) menu_containers ;;
+            5) menu_system ;;
+            6) menu_orphans ;;
+            7) menu_cache ;;
             *) exit 0 ;;
         esac
     done
@@ -398,11 +981,17 @@ pkgclean $VERSION — интерактивное удаление приложе
 
 Использование:
   pkgclean         показать пакеты, которые ты ставил сам
-  pkgclean -a      показать все пакеты, включая зависимости
+  pkgclean -a      показать все пакеты, включая зависимости и базовые snap
   pkgclean -h      эта справка
   pkgclean -V      версия
 
-Поддерживаются: pacman (Arch), apt (Debian/Ubuntu), dnf (Fedora/RHEL)
+Что умеет:
+  - пакеты pacman / apt / dnf, Flatpak и Snap в одном списке
+  - pipx, pip (--user), npm -g, cargo и файлы AppImage
+  - поиск больших файлов, обзор папок по размеру, старые загрузки
+  - образы, контейнеры и тома Docker / Podman
+  - старые ядра, журнал systemd, архивные логи, дампы падений
+  - ненужные зависимости и кэши
 EOF
 }
 

@@ -20,6 +20,11 @@
 - Симуляция: показывает, что будет удалено, ничего не трогая
 - Очистка ненужных зависимостей (сирот)
 - Очистка кэшей: пакетного менеджера, yay/paru, журнала systemd, Flatpak
+- Приложения Flatpak и Snap в одном списке с системными пакетами
+- Программы pipx, pip (`--user`), npm `-g`, cargo и файлы AppImage (с очисткой ярлыков)
+- Поиск больших файлов, обзор папок по размеру (как ncdu), чистка старых загрузок
+- Docker / Podman: остановленные контейнеры, образы, неиспользуемые тома, prune
+- Старые ядра (apt, dnf), архивные логи, дампы падений, корзина
 
 ## Установка
 
@@ -43,8 +48,8 @@
 и установи (версию в ссылке замени на последнюю):
 
 ```bash
-wget https://github.com/bywrd/pkgclean/releases/download/v2.0.1/pkgclean_2.0.1_all.deb
-sudo apt install ./pkgclean_2.0.1_all.deb
+wget https://github.com/bywrd/pkgclean/releases/download/v2.1.0/pkgclean_2.1.0_all.deb
+sudo apt install ./pkgclean_2.1.0_all.deb
 ```
 
 `apt` сам подтянет `fzf` и `sudo`. Удаление: `sudo apt remove pkgclean`.
@@ -78,7 +83,7 @@ makepkg -si
 ### Один файл
 
 ```bash
-curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.0.1/pkgclean
+curl -LO https://raw.githubusercontent.com/bywrd/pkgclean/v2.1.0/pkgclean
 sudo install -Dm755 pkgclean /usr/local/bin/pkgclean
 ```
 
@@ -127,7 +132,7 @@ make check    # bash -n + shellcheck (если установлен)
 make deb      # собрать .deb в build/
 ```
 
-Релизы: запушь тег вроде `v2.0.1` (предварительно подними `VERSION` в `pkgclean`).
+Релизы: запушь тег вроде `v2.1.1` (предварительно подними `VERSION` в `pkgclean`).
 GitHub Actions проверит скрипт, соберёт `.deb` и приложит его к релизу.
 
 ## Лицензия
